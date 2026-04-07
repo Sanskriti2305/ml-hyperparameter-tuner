@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-hyperparameter-tuner"
+version = "1.0.0"
+description = "ML Hyperparameter Tuner - OpenEnv"
+requires-python = ">=3.10"
+
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "httpx>=0.24.0",
+]

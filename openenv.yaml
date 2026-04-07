@@ -1,0 +1,8 @@
+name: ml-hyperparameter-tuner
+version: "1.0.0"
+description: "RL environment for ML hyperparameter optimization"
+
+environment:
+  step: "step"
+  reset: "reset"
+  state: "state"
