@@ -36,8 +36,6 @@ Example: {"learning_rate": 0.001, "batch_size": 32, "weight_decay": 0.0, "optimi
 Only output the JSON object, nothing else."""
 
 
-# ── Logging helpers (must match spec exactly) ────────────────────────────────
-
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
@@ -59,7 +57,10 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     )
 
 
-# ── LLM helpers ──────────────────────────────────────────────────────────────
+def clamp_score(raw: float) -> float:
+    """Always return a score strictly inside (0.0, 1.0) — never exactly 0.0 or 1.0"""
+    return min(0.999, max(0.001, float(raw)))
+
 
 def parse_llm_action(response_text: str) -> HyperparamAction:
     try:
@@ -115,14 +116,12 @@ Suggest next hyperparameters as JSON."""
     return action, action_str
 
 
-# ── Single task runner ────────────────────────────────────────────────────────
-
 def run_task(llm: OpenAI, difficulty: str) -> None:
     client_env = HyperparamClient(base_url=ENV_BASE_URL)
 
     rewards: List[float] = []
     steps_taken = 0
-    score = 0.0
+    score = 0.001  # never 0.0 — safe default if everything fails
     success = False
     obs = None
 
@@ -155,16 +154,18 @@ def run_task(llm: OpenAI, difficulty: str) -> None:
             if done:
                 break
 
-        # Grader score from metadata, clamped to [0, 1]
-        if obs is not None:
-            raw_score = obs.metadata.get("grader_score", 0.0) if obs.metadata else 0.0
+        # Extract grader_score — fallback to 0.1 so it's never exactly 0.0
+        if obs is not None and obs.metadata:
+            raw_score = obs.metadata.get("grader_score", 0.1)
         else:
-            raw_score = 0.0
-        score = min(0.999, max(0.001, float(raw_score)))
+            raw_score = 0.1
+
+        score = clamp_score(raw_score)
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as e:
         print(f"[ERROR] task={difficulty} {str(e)}", file=sys.stderr, flush=True)
+        score = 0.001  # strictly in range even on hard failure
         success = False
 
     finally:
@@ -174,8 +175,6 @@ def run_task(llm: OpenAI, difficulty: str) -> None:
             pass
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     if not API_KEY:
