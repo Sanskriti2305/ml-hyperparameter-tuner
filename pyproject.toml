@@ -9,7 +9,7 @@ description = "ML Hyperparameter Tuner - OpenEnv"
 requires-python = ">=3.10"
 
 [project.scripts]
-server = "server.app:app"
+server = "server.app:main"
 
 dependencies = [
     "openenv-core>=0.2.0",
