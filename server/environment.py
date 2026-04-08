@@ -209,14 +209,14 @@ class HyperparamEnvironment:
         self.difficulty = difficulty
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Load cached dataset
-        self.train_data, self.val_data, dataset_info = get_cached_dataset(difficulty)
-        
-        self.dataset_name = dataset_info["dataset_name"]
-        self.num_classes = dataset_info["num_classes"]
-        self.max_epochs = dataset_info["max_epochs"]
-        self.time_budget_seconds = dataset_info["time_budget_seconds"]
-        self.target_accuracy = dataset_info["target_accuracy"]
+        # Lazy load - don't download yet
+        self.train_data = None
+        self.val_data = None
+        self.dataset_name = None
+        self.num_classes = None
+        self.max_epochs = None
+        self.time_budget_seconds = None
+        self.target_accuracy = None
         
         # State
         self.episode_id = None
@@ -264,6 +264,16 @@ class HyperparamEnvironment:
     
     def reset(self) -> HyperparamObservation:
         """Start new training episode"""
+
+        # Lazy load dataset on first reset
+        if self.train_data is None:
+            self.train_data, self.val_data, dataset_info = get_cached_dataset(self.difficulty)
+            self.dataset_name = dataset_info["dataset_name"]
+            self.num_classes = dataset_info["num_classes"]
+            self.max_epochs = dataset_info["max_epochs"]
+            self.time_budget_seconds = dataset_info["time_budget_seconds"]
+            self.target_accuracy = dataset_info["target_accuracy"]
+
         # Reset model
         if self.difficulty == "easy":
             self.model = SimpleNet().to(self.device)
