@@ -3,6 +3,22 @@ version: "1.0.0"
 description: "RL environment for ML hyperparameter optimization"
 
 environment:
-  step: "step"
-  reset: "reset"
-  state: "state"
+  step: "/step"
+  reset: "/reset"
+  state: "/state"
+
+tasks:
+  - name: easy
+    description: "MNIST digit classification"
+    max_steps: 5
+    target_accuracy: 0.90
+
+  - name: medium
+    description: "CIFAR-10 image classification"
+    max_steps: 5
+    target_accuracy: 0.80
+
+  - name: hard
+    description: "ImageNet subset classification"
+    max_steps: 5
+    target_accuracy: 0.60

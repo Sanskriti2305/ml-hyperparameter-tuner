@@ -160,7 +160,7 @@ def run_task(llm: OpenAI, difficulty: str) -> None:
             raw_score = obs.metadata.get("grader_score", 0.0) if obs.metadata else 0.0
         else:
             raw_score = 0.0
-        score = min(max(float(raw_score), 0.0), 1.0)
+        score = min(0.999, max(0.001, float(raw_score)))
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as e:

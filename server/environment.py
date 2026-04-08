@@ -417,15 +417,16 @@ class HyperparamEnvironment:
         return total_reward
     
     def _get_grader_score(self, accuracy: float) -> float:
-        """Grader score for the task (0.0 - 1.0)"""
+        """Grader score for the task — strictly in (0.0, 1.0)"""
         if self.difficulty == "easy":
-            return min(1.0, accuracy / 0.90)
+            raw = accuracy / 0.90
         elif self.difficulty == "medium":
-            return min(1.0, accuracy / 0.80)
-        elif self.difficulty == "hard":
-            return min(1.0, accuracy / 0.60)
-        return 0.0
-    
+            raw = accuracy / 0.80
+        else:  # hard
+            raw = accuracy / 0.60
+        # Clamp strictly inside (0, 1) — never exactly 0.0 or 1.0
+        return min(0.999, max(0.001, raw))
+        
     def _get_model_size(self) -> float:
         """Get model size in MB"""
         total_params = sum(p.numel() for p in self.model.parameters())
