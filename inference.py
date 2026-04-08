@@ -1,40 +1,48 @@
 ﻿#!/usr/bin/env python3
 """
-Baseline inference script for ML Hyperparameter Tuner
-Follows strict OpenEnv stdout format specification
+Inference Script for ML Hyperparameter Tuner
+Compliant with OpenEnv stdout format specification.
+Runs 3 tasks: easy, medium, hard
 """
 
 import os
 import sys
+import json
+import re
 from typing import List, Optional
+
 from openai import OpenAI
 
 from src.client import HyperparamClient
 from src.models import HyperparamAction
 
 # MANDATORY environment variables
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4")
-HF_TOKEN = os.getenv("HF_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:8000")
 
+BENCHMARK = "ml-hyperparameter-tuner"
+TASKS = ["easy", "medium", "hard"]
 MAX_STEPS = 5
 TEMPERATURE = 0.7
 MAX_TOKENS = 200
+SUCCESS_SCORE_THRESHOLD = 0.5
 
 SYSTEM_PROMPT = """You are an AI agent optimizing machine learning hyperparameters.
 Based on the current training state (accuracy, loss, epoch), suggest the next hyperparameters.
-Reply with a JSON object containing: learning_rate, batch_size, weight_decay, optimizer.
-Example: {"learning_rate": 0.001, "batch_size": 32, "weight_decay": 0.0, "optimizer": "adam"}"""
+Reply with a JSON object containing exactly: learning_rate, batch_size, weight_decay, optimizer.
+Example: {"learning_rate": 0.001, "batch_size": 32, "weight_decay": 0.0, "optimizer": "adam"}
+Only output the JSON object, nothing else."""
 
+
+# ── Logging helpers (must match spec exactly) ────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
-    """Emit [START] line"""
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    """Emit [STEP] line"""
     error_val = error if error else "null"
     done_val = str(done).lower()
     print(
@@ -44,16 +52,17 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    """Emit [END] line"""
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
+
+# ── LLM helpers ──────────────────────────────────────────────────────────────
 
 def parse_llm_action(response_text: str) -> HyperparamAction:
-    """Parse LLM JSON response to HyperparamAction"""
     try:
-        import json
-        import re
         json_match = re.search(r'\{[^{}]*\}', response_text)
         if json_match:
             action_dict = json.loads(json_match.group())
@@ -61,34 +70,27 @@ def parse_llm_action(response_text: str) -> HyperparamAction:
                 learning_rate=float(action_dict.get("learning_rate", 0.001)),
                 batch_size=int(action_dict.get("batch_size", 32)),
                 weight_decay=float(action_dict.get("weight_decay", 0.0)),
-                optimizer=action_dict.get("optimizer", "adam")
+                optimizer=action_dict.get("optimizer", "adam"),
             )
-    except Exception as e:
+    except Exception:
         pass
-    
-    # Fallback to defaults
     return HyperparamAction(
-        learning_rate=0.001,
-        batch_size=32,
-        weight_decay=0.0,
-        optimizer="adam"
+        learning_rate=0.001, batch_size=32, weight_decay=0.0, optimizer="adam"
     )
 
 
-def get_llm_action(client_llm: OpenAI, obs, difficulty: str, step: int) -> tuple:
-    """Get action from LLM and return (action, action_str)"""
-    
-    user_prompt = f"""Current state (Step {step}, {difficulty}):
+def get_llm_action(llm: OpenAI, obs, difficulty: str, step: int):
+    user_prompt = f"""Current state (Step {step}, difficulty={difficulty}):
 - Validation Accuracy: {obs.validation_accuracy:.4f}
 - Training Loss: {obs.training_loss:.4f}
 - Learning Rate: {obs.current_learning_rate:.6f}
 - Epoch: {obs.epoch}
-- Time: {obs.time_elapsed_seconds:.1f}s elapsed
+- Time elapsed: {obs.time_elapsed_seconds:.1f}s
 
 Suggest next hyperparameters as JSON."""
 
     try:
-        response = client_llm.chat.completions.create(
+        response = llm.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -97,79 +99,93 @@ Suggest next hyperparameters as JSON."""
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
-        response_text = response.choices[0].message.content
+        response_text = response.choices[0].message.content or ""
         action = parse_llm_action(response_text)
-        action_str = f"lr={action.learning_rate:.4f},bs={action.batch_size},wd={action.weight_decay:.4f},opt={action.optimizer}"
-        return action, action_str
-    except Exception as e:
-        # Fallback action
-        action = HyperparamAction(learning_rate=0.001, batch_size=32, weight_decay=0.0, optimizer="adam")
-        action_str = f"lr={action.learning_rate:.4f},bs={action.batch_size},wd={action.weight_decay:.4f},opt={action.optimizer}"
-        return action, action_str
+    except Exception:
+        action = HyperparamAction(
+            learning_rate=0.001, batch_size=32, weight_decay=0.0, optimizer="adam"
+        )
+
+    action_str = (
+        f"lr={action.learning_rate:.4f},"
+        f"bs={action.batch_size},"
+        f"wd={action.weight_decay:.4f},"
+        f"opt={action.optimizer}"
+    )
+    return action, action_str
 
 
-def main():
-    # Validate required env vars
-    if not OPENAI_API_KEY:
-        print("[ERROR] OPENAI_API_KEY not set!", file=sys.stderr)
-        sys.exit(1)
-    
-    client_llm = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.openai.com/v1")
-    client_env = HyperparamClient(base_url=API_BASE_URL)
-    
-    difficulty = os.getenv("TASK_NAME", "easy")
-    
-    # Emit [START]
-    log_start(task=difficulty, env="ml-hyperparameter-tuner", model=MODEL_NAME)
-    
+# ── Single task runner ────────────────────────────────────────────────────────
+
+def run_task(llm: OpenAI, difficulty: str) -> None:
+    client_env = HyperparamClient(base_url=ENV_BASE_URL)
+
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
-    
+    obs = None
+
+    log_start(task=difficulty, env=BENCHMARK, model=MODEL_NAME)
+
     try:
-        # Reset environment
         obs = client_env.reset(difficulty=difficulty)
-        
+
         for step in range(1, MAX_STEPS + 1):
             if obs.done:
                 break
-            
-            # Get action from LLM
-            action, action_str = get_llm_action(client_llm, obs, difficulty, step)
-            
-            # Step environment
-            obs = client_env.step(action)
-            
-            reward = obs.reward
-            done = obs.done
-            error = None
-            
+
+            action, action_str = get_llm_action(llm, obs, difficulty, step)
+
+            try:
+                obs = client_env.step(action)
+                reward = float(obs.reward)
+                done = bool(obs.done)
+                error = None
+            except Exception as e:
+                reward = 0.0
+                done = True
+                error = str(e)
+
             rewards.append(reward)
             steps_taken = step
-            
-            # Emit [STEP]
+
             log_step(step=step, action=action_str, reward=reward, done=done, error=error)
-            
+
             if done:
                 break
-        
-        # Calculate score (normalized to [0, 1])
-        grader_score = obs.metadata.get("grader_score", 0.0)
-        score = min(max(grader_score, 0.0), 1.0)
-        success = score >= 0.5
-        
+
+        # Grader score from metadata, clamped to [0, 1]
+        if obs is not None:
+            raw_score = obs.metadata.get("grader_score", 0.0) if obs.metadata else 0.0
+        else:
+            raw_score = 0.0
+        score = min(max(float(raw_score), 0.0), 1.0)
+        success = score >= SUCCESS_SCORE_THRESHOLD
+
     except Exception as e:
-        print(f"[ERROR] {str(e)}", file=sys.stderr)
+        print(f"[ERROR] task={difficulty} {str(e)}", file=sys.stderr, flush=True)
         success = False
+
     finally:
         try:
             client_env.close()
-        except:
+        except Exception:
             pass
-        
-        # Emit [END]
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main():
+    if not API_KEY:
+        print("[ERROR] HF_TOKEN (or API_KEY) is not set!", file=sys.stderr)
+        sys.exit(1)
+
+    llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    for difficulty in TASKS:
+        run_task(llm, difficulty)
 
 
 if __name__ == "__main__":
