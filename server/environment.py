@@ -9,6 +9,30 @@ import uuid
 from src.models import HyperparamAction, HyperparamObservation, HyperparamState
 
 # ============================================================================
+# GLOBAL DATASET CACHE (Load once, reuse)
+# ============================================================================
+
+DATASET_CACHE = {}
+
+def get_cached_dataset(difficulty):
+    """Get cached dataset or load it"""
+    if difficulty in DATASET_CACHE:
+        print(f"[ENV] Using cached {difficulty} dataset")
+        return DATASET_CACHE[difficulty]
+    
+    print(f"[ENV] Loading {difficulty} dataset for first time...")
+    
+    if difficulty == "easy":
+        train_data, val_data, dataset_info = load_mnist()
+    elif difficulty == "medium":
+        train_data, val_data, dataset_info = load_cifar10()
+    else:
+        train_data, val_data, dataset_info = load_imagenet_subset()
+    
+    DATASET_CACHE[difficulty] = (train_data, val_data, dataset_info)
+    return train_data, val_data, dataset_info
+
+# ============================================================================
 # NEURAL NETWORK ARCHITECTURES
 # ============================================================================
 
@@ -69,6 +93,112 @@ class ResNetSmall(nn.Module):
 
 
 # ============================================================================
+# DATASET LOADING FUNCTIONS (FAST)
+# ============================================================================
+
+def load_mnist():
+    """Load MNIST dataset (Easy)"""
+    print("[DATASET] Loading MNIST...")
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    
+    full_train = datasets.MNIST(
+        root='/tmp/mnist', train=True, download=True, transform=transform
+    )
+    full_val = datasets.MNIST(
+        root='/tmp/mnist', train=False, download=True, transform=transform
+    )
+    
+    # Use 2% of data
+    train_indices = list(range(0, len(full_train), 50))
+    val_indices = list(range(0, len(full_val), 50))
+    
+    train_data = Subset(full_train, train_indices)
+    val_data = Subset(full_val, val_indices)
+    
+    dataset_info = {
+        "dataset_name": "MNIST",
+        "num_classes": 10,
+        "max_epochs": 5,
+        "time_budget_seconds": 300,
+        "target_accuracy": 0.90,
+    }
+    
+    return train_data, val_data, dataset_info
+
+def load_cifar10():
+    """Load CIFAR-10 dataset (Medium)"""
+    print("[DATASET] Loading CIFAR-10...")
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            (0.4914, 0.4822, 0.4465),
+            (0.2023, 0.1994, 0.2010)
+        )
+    ])
+    
+    full_train = datasets.CIFAR10(
+        root='/tmp/cifar10', train=True, download=True, transform=transform
+    )
+    full_val = datasets.CIFAR10(
+        root='/tmp/cifar10', train=False, download=True, transform=transform
+    )
+    
+    # Use 2% of data
+    train_indices = list(range(0, len(full_train), 50))
+    val_indices = list(range(0, len(full_val), 50))
+    
+    train_data = Subset(full_train, train_indices)
+    val_data = Subset(full_val, val_indices)
+    
+    dataset_info = {
+        "dataset_name": "CIFAR-10",
+        "num_classes": 10,
+        "max_epochs": 5,
+        "time_budget_seconds": 600,
+        "target_accuracy": 0.80,
+    }
+    
+    return train_data, val_data, dataset_info
+
+def load_imagenet_subset():
+    """Load ImageNet subset (Hard)"""
+    print("[DATASET] Loading ImageNet-100...")
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            (0.4914, 0.4822, 0.4465),
+            (0.2023, 0.1994, 0.2010)
+        )
+    ])
+    
+    full_train = datasets.CIFAR10(
+        root='/tmp/cifar10', train=True, download=True, transform=transform
+    )
+    full_val = datasets.CIFAR10(
+        root='/tmp/cifar10', train=False, download=True, transform=transform
+    )
+    
+    # Use 1% of data
+    train_indices = list(range(0, len(full_train), 100))
+    val_indices = list(range(0, len(full_val), 100))
+    
+    train_data = Subset(full_train, train_indices)
+    val_data = Subset(full_val, val_indices)
+    
+    dataset_info = {
+        "dataset_name": "ImageNet-100",
+        "num_classes": 10,
+        "max_epochs": 5,
+        "time_budget_seconds": 900,
+        "target_accuracy": 0.60,
+    }
+    
+    return train_data, val_data, dataset_info
+
+# ============================================================================
 # MAIN ENVIRONMENT CLASS
 # ============================================================================
 
@@ -79,8 +209,14 @@ class HyperparamEnvironment:
         self.difficulty = difficulty
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Load dataset based on difficulty
-        self._load_dataset()
+        # Load cached dataset
+        self.train_data, self.val_data, dataset_info = get_cached_dataset(difficulty)
+        
+        self.dataset_name = dataset_info["dataset_name"]
+        self.num_classes = dataset_info["num_classes"]
+        self.max_epochs = dataset_info["max_epochs"]
+        self.time_budget_seconds = dataset_info["time_budget_seconds"]
+        self.target_accuracy = dataset_info["target_accuracy"]
         
         # State
         self.episode_id = None
@@ -95,116 +231,36 @@ class HyperparamEnvironment:
         self.optimizer = None
         self.model = None
         self.criterion = None
-    
-    def _load_dataset(self):
-        """Load dataset based on difficulty"""
+        
+        # Create model
         if self.difficulty == "easy":
-            self._load_mnist()
-        elif self.difficulty == "medium":
-            self._load_cifar10()
-        elif self.difficulty == "hard":
-            self._load_imagenet_subset()
+            self.model = SimpleNet().to(self.device)
         else:
-            raise ValueError(f"Unknown difficulty: {self.difficulty}")
+            self.model = ResNetSmall(num_classes=self.num_classes).to(self.device)
+        
+        self.criterion = nn.CrossEntropyLoss()
     
-    def _load_mnist(self):
-        """Load MNIST dataset (Easy) - OPTIMIZED"""
-        print("[ENV] Loading MNIST (Easy)...")
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
-        
-        full_train = datasets.MNIST(
-            root='/tmp/mnist', train=True, download=True, transform=transform
-        )
-        full_val = datasets.MNIST(
-            root='/tmp/mnist', train=False, download=True, transform=transform
-        )
-        
-        # Use 2% of data (REDUCED from 10%)
-        train_indices = list(range(0, len(full_train), 50))  # Every 50th sample
-        val_indices = list(range(0, len(full_val), 50))
-        
-        self.train_data = Subset(full_train, train_indices)
-        self.val_data = Subset(full_val, val_indices)
-        
-        self.dataset_name = "MNIST"
-        self.num_classes = 10
-        self.max_epochs = 5  # REDUCED from 10
-        self.time_budget_seconds = 300  # 5 minutes
-        self.target_accuracy = 0.90
-        
-        self.model = SimpleNet().to(self.device)
-        self.criterion = nn.CrossEntropyLoss()
-
-    def _load_cifar10(self):
-        """Load CIFAR-10 dataset (Medium) - OPTIMIZED"""
-        print("[ENV] Loading CIFAR-10 (Medium)...")
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(
-                (0.4914, 0.4822, 0.4465),
-                (0.2023, 0.1994, 0.2010)
+    def _create_optimizer(self):
+        """Create optimizer with current settings"""
+        if self.optimizer_name == "adam":
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay
             )
-        ])
-        
-        full_train = datasets.CIFAR10(
-            root='/tmp/cifar10', train=True, download=True, transform=transform
-        )
-        full_val = datasets.CIFAR10(
-            root='/tmp/cifar10', train=False, download=True, transform=transform
-        )
-        
-        # Use 2% of data (REDUCED from 5%)
-        train_indices = list(range(0, len(full_train), 50))  # Every 50th sample
-        val_indices = list(range(0, len(full_val), 50))
-        
-        self.train_data = Subset(full_train, train_indices)
-        self.val_data = Subset(full_val, val_indices)
-        
-        self.dataset_name = "CIFAR-10"
-        self.num_classes = 10
-        self.max_epochs = 5  # REDUCED from 20
-        self.time_budget_seconds = 600  # 10 minutes
-        self.target_accuracy = 0.80
-        
-        self.model = ResNetSmall(num_classes=10).to(self.device)
-        self.criterion = nn.CrossEntropyLoss()
-
-    def _load_imagenet_subset(self):
-        """Load ImageNet subset (Hard) - OPTIMIZED"""
-        print("[ENV] Loading ImageNet-100 (Hard)...")
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(
-                (0.4914, 0.4822, 0.4465),
-                (0.2023, 0.1994, 0.2010)
+        elif self.optimizer_name == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay
             )
-        ])
-        
-        full_train = datasets.CIFAR10(
-            root='/tmp/cifar10', train=True, download=True, transform=transform
-        )
-        full_val = datasets.CIFAR10(
-            root='/tmp/cifar10', train=False, download=True, transform=transform
-        )
-        
-        # Use 1% of data (REDUCED from 2%)
-        train_indices = list(range(0, len(full_train), 100))  # Every 100th sample
-        val_indices = list(range(0, len(full_val), 100))
-        
-        self.train_data = Subset(full_train, train_indices)
-        self.val_data = Subset(full_val, val_indices)
-        
-        self.dataset_name = "ImageNet-100"
-        self.num_classes = 10
-        self.max_epochs = 5  # REDUCED from 50
-        self.time_budget_seconds = 900  # 15 minutes
-        self.target_accuracy = 0.60
-        
-        self.model = ResNetSmall(num_classes=10).to(self.device)
-        self.criterion = nn.CrossEntropyLoss()
+        else:  # sgd
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+                momentum=0.9
+            )
     
     def reset(self) -> HyperparamObservation:
         """Start new training episode"""
@@ -244,34 +300,8 @@ class HyperparamEnvironment:
             metadata={"episode_id": self.episode_id}
         )
     
-    def _create_optimizer(self):
-        """Create optimizer with current settings"""
-        if self.optimizer_name == "adam":
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(),
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay
-            )
-        elif self.optimizer_name == "adamw":
-            self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay
-            )
-        else:  # sgd
-            self.optimizer = torch.optim.SGD(
-                self.model.parameters(),
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay,
-                momentum=0.9
-            )
-    
     def step(self, action: HyperparamAction) -> HyperparamObservation:
         """Train for one epoch with these settings"""
-        # Make sure criterion exists
-        if self.criterion is None:
-            self.criterion = nn.CrossEntropyLoss()
-        
         # Update settings
         self.learning_rate = action.learning_rate
         self.batch_size = action.batch_size
@@ -318,7 +348,7 @@ class HyperparamEnvironment:
         self.configs_tried += 1
         self.best_accuracy = max(self.best_accuracy, val_accuracy)
         
-        # Calculate reward based on difficulty
+        # Calculate reward
         reward = self._compute_reward(val_accuracy, avg_loss)
         
         # Calculate time
@@ -347,6 +377,7 @@ class HyperparamEnvironment:
                 "grader_score": self._get_grader_score(val_accuracy)
             }
         )
+    
     def _compute_reward(self, val_acc: float, training_loss: float) -> float:
         """Multi-component reward function"""
         
@@ -371,23 +402,17 @@ class HyperparamEnvironment:
         divergence_penalty = -0.1 if training_loss > 5.0 else 0.0
         
         total_reward = accuracy_reward + speed_reward + step_penalty + divergence_penalty
-        total_reward = max(-1.0, min(1.0, total_reward))  # Clamp to [-1, 1]
+        total_reward = max(-1.0, min(1.0, total_reward))
         
         return total_reward
     
     def _get_grader_score(self, accuracy: float) -> float:
-        """
-        Grader score for the task (0.0 - 1.0)
-        This is what judges will use to score your submission
-        """
+        """Grader score for the task (0.0 - 1.0)"""
         if self.difficulty == "easy":
-            # MNIST: target 90%
             return min(1.0, accuracy / 0.90)
         elif self.difficulty == "medium":
-            # CIFAR-10: target 80%
             return min(1.0, accuracy / 0.80)
         elif self.difficulty == "hard":
-            # ImageNet-100: target 60%
             return min(1.0, accuracy / 0.60)
         return 0.0
     
