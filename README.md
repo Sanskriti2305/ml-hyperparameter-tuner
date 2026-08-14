@@ -13,6 +13,8 @@ This project implements an intelligent hyperparameter tuning system that uses Re
 
 **Key Innovation:** Uses OpenEnv to create a custom RL environment where agents learn to select optimal hyperparameters.
 
+Project Timeline: April 2026
+
 ## ✨ Features
 
 - 🎯 **RL-Based Optimization** - Train agents to discover optimal hyperparameters
